@@ -3,3 +3,4 @@
 # Firebase / Google service-account credentials — never committed (workspace secrets policy)
 *-firebase-adminsdk*.json
 *service-account*.json
+bin/
