@@ -14,6 +14,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"strings"
 
 	"github.com/mrrobotisreal/sumrak-api/internal/auth"
 	"github.com/mrrobotisreal/sumrak-api/internal/storage"
@@ -24,6 +25,10 @@ type Options struct {
 	Token        string
 	MaxBodyBytes int64
 	Log          *slog.Logger
+	// Sync, when non-nil, serves the /v1 sync API (already wrapped in
+	// firebaseauth.Middleware by the caller). Nil disables /v1: those paths
+	// fall through to the bearer-protected mux and 404 like any unknown route.
+	Sync http.Handler
 }
 
 // New returns the complete syncd http.Handler: auth wrapped around the
@@ -37,7 +42,19 @@ func New(store *storage.Store, opts Options) http.Handler {
 	mux.HandleFunc("PUT /backup", s.handlePut)
 	mux.HandleFunc("GET /backups", s.handleList)
 	mux.HandleFunc("GET /backup/{name}", s.handleGet)
-	return auth.Middleware(opts.Token, mux)
+	backups := auth.Middleware(opts.Token, mux)
+	if opts.Sync == nil {
+		return backups
+	}
+	// /v1/* uses Firebase ID-token auth (inside opts.Sync); everything else —
+	// including unknown non-/v1 paths — keeps the bearer middleware.
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/v1/") {
+			opts.Sync.ServeHTTP(w, r)
+			return
+		}
+		backups.ServeHTTP(w, r)
+	})
 }
 
 type server struct {

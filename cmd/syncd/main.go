@@ -16,8 +16,11 @@ import (
 	"time"
 
 	"github.com/mrrobotisreal/sumrak-api/internal/config"
+	"github.com/mrrobotisreal/sumrak-api/internal/db"
+	"github.com/mrrobotisreal/sumrak-api/internal/firebaseauth"
 	"github.com/mrrobotisreal/sumrak-api/internal/server"
 	"github.com/mrrobotisreal/sumrak-api/internal/storage"
+	syncapi "github.com/mrrobotisreal/sumrak-api/internal/sync"
 )
 
 func main() {
@@ -34,9 +37,30 @@ func main() {
 		os.Exit(1)
 	}
 
+	opts := server.Options{Token: cfg.Token, MaxBodyBytes: cfg.MaxBodyBytes, Log: log}
+	if cfg.SyncEnabled() {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		pool, err := db.Open(ctx, cfg.DatabaseURL)
+		if err == nil {
+			var applied []string
+			applied, err = db.Migrate(ctx, pool)
+			log.Info("migrations", "applied", applied)
+		}
+		cancel()
+		if err != nil {
+			log.Error("database init failed", "err", err)
+			os.Exit(1)
+		}
+		defer pool.Close()
+		verifier := firebaseauth.New(cfg.FirebaseProjectID, firebaseauth.CertsURLFromEnv())
+		opts.Sync = firebaseauth.Middleware(verifier, syncapi.New(pool, cfg.MaxPushBytes, log).Routes())
+	} else {
+		log.Info("/v1 sync API disabled (SYNCD_FIREBASE_PROJECT_ID unset)")
+	}
+
 	srv := &http.Server{
 		Addr:              cfg.Addr,
-		Handler:           server.New(store, server.Options{Token: cfg.Token, MaxBodyBytes: cfg.MaxBodyBytes, Log: log}),
+		Handler:           server.New(store, opts),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 
@@ -46,6 +70,7 @@ func main() {
 			"dataDir", cfg.DataDir,
 			"retentionDays", cfg.RetentionDailyDays,
 			"maxBodyBytes", cfg.MaxBodyBytes,
+			"syncEnabled", cfg.SyncEnabled(),
 		)
 		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			log.Error("server failed", "err", err)

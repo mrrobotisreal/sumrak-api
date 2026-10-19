@@ -169,3 +169,36 @@ func TestPutTriggersRetentionPrune(t *testing.T) {
 		t.Fatalf("expected 31 survivors after rolling prunes, got %d", len(infos))
 	}
 }
+
+func TestV1DisabledWithoutSync(t *testing.T) {
+	h := newHandler(t) // Options.Sync == nil
+	for _, p := range []string{"/v1/me", "/v1/sync/pull", "/v1/devices"} {
+		if rec := do(h, "GET", p, "", true); rec.Code != http.StatusNotFound {
+			t.Fatalf("%s authed = %d, want 404", p, rec.Code)
+		}
+		if rec := do(h, "GET", p, "", false); rec.Code != http.StatusUnauthorized {
+			t.Fatalf("%s unauthed = %d, want 401 (unchanged)", p, rec.Code)
+		}
+	}
+}
+
+func TestV1RoutedToSyncHandlerBackupsKeepBearer(t *testing.T) {
+	store, err := storage.New(t.TempDir(), 30)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sync := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusTeapot) })
+	h := New(store, Options{Token: token, MaxBodyBytes: 1 << 20, Sync: sync})
+	if rec := do(h, "GET", "/v1/me", "", false); rec.Code != http.StatusTeapot {
+		t.Fatalf("/v1 should reach sync handler, got %d", rec.Code)
+	}
+	if rec := do(h, "GET", "/backups", "", false); rec.Code != http.StatusUnauthorized {
+		t.Fatalf("/backups unauthed = %d", rec.Code)
+	}
+	if rec := do(h, "GET", "/nope", "", false); rec.Code != http.StatusUnauthorized {
+		t.Fatalf("unknown path unauthed = %d", rec.Code)
+	}
+	if rec := do(h, "GET", "/backups", "", true); rec.Code != http.StatusOK {
+		t.Fatalf("/backups authed = %d", rec.Code)
+	}
+}
