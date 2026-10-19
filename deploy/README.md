@@ -1,125 +1,100 @@
-# Deploying syncd to the home server
+# Deploying the Sumrak API to the home server
 
-`syncd` runs on the home server and is reached **only over Tailscale** — it is
-never exposed to the public internet. Tailscale's WireGuard tunnel provides
-transport encryption and network-level authentication, which is why syncd
-itself speaks plain HTTP with bearer auth on top: TLS termination inside the
-tailnet would add certificate management for no additional threat-model win.
-(The archives are additionally AES-256-GCM-encrypted end-to-end by the app
-before they ever leave the phone — syncd stores opaque blobs and never holds
-a key.)
+The binary is built from `cmd/syncd` (the T21 name) but installs and runs as
+**`sumrak-api`**. The home server already runs the **aflulit** (Hebrew) app's
+own `syncd.service` on **:8787**, so everything Sumrak is namespaced and the
+two never touch:
 
-## Prerequisites
+| | aflulit (existing, untouched) | **Sumrak** |
+|---|---|---|
+| systemd unit | `syncd.service` | **`sumrak-api.service`** |
+| binary | `/usr/local/bin/syncd` | **`/usr/local/bin/sumrak-api`** |
+| system user | `syncd` | **`sumrak-api`** |
+| env file | `/etc/syncd/syncd.env` | **`/etc/sumrak-api/sumrak-api.env`** |
+| data dir | `/var/lib/syncd` | **`/var/lib/sumrak-api`** |
+| listen | `:8787` | **`127.0.0.1:8687`** |
+| Postgres | — | role + db **`sumrak_api`** |
+| public URL | — | **`https://sumrak.winapps.dev`** (Cloudflare tunnel → `http://localhost:8687`) |
 
-- A Linux home server with systemd, joined to the tailnet (`tailscale status`
-  shows it), with the S24 Ultra's Tailscale client able to reach it.
-- Go **not** required on the server if you cross-compile (step 1b).
+Reachability: the Cloudflare tunnel's published application route
+`sumrak.winapps.dev` → `http://localhost:8687` gives TLS and a public
+hostname; the service itself binds loopback only. Auth is unchanged:
+backups need the `SYNCD_TOKEN` bearer token, `/v1/*` needs a Firebase ID
+token for project `sumrak-app` — there is no unauthenticated route.
+(Backup archives are additionally AES-256-GCM-encrypted by the app.)
 
-## 1. Build
-
-On the server (with Go ≥ 1.24):
-
-```sh
-git clone <this repo> && cd SumrakAPI
-go build -o syncd ./cmd/syncd
-```
-
-Or cross-compile from the Mac and copy the binary over (pick the arch that
-matches the server — `uname -m` there; `x86_64` → `amd64`, `aarch64` → `arm64`):
+## First-time install
 
 ```sh
-GOOS=linux GOARCH=amd64 go build -o syncd-linux ./cmd/syncd
-scp syncd-linux <server>:/tmp/syncd
-```
+# 0. Code + build (Go ≥ 1.24 on the server; or `make linux` on the Mac and scp)
+cd ~ && git clone git@github.com:mrrobotisreal/sumrack-api.git SumrakAPI   # or: cd SumrakAPI && git pull
+cd SumrakAPI && make build                     # → bin/sumrak-api
 
-## 2. Install
+# 1. Postgres (skip the install line if it's already there)
+sudo apt install -y postgresql
+sudo -u postgres psql -c "CREATE ROLE sumrak_api LOGIN PASSWORD 'REPLACE_WITH_DB_PASSWORD';"
+sudo -u postgres createdb -O sumrak_api sumrak_api
 
-```sh
-sudo useradd --system --home /var/lib/syncd --shell /usr/sbin/nologin syncd
-sudo install -m 755 /tmp/syncd /usr/local/bin/syncd
+# 2. User, binary, config
+sudo useradd --system --home /var/lib/sumrak-api --shell /usr/sbin/nologin sumrak-api
+sudo install -m 755 bin/sumrak-api /usr/local/bin/sumrak-api
+sudo mkdir -p /etc/sumrak-api
+sudo cp deploy/sumrak-api.env.example /etc/sumrak-api/sumrak-api.env
+sudo chmod 600 /etc/sumrak-api/sumrak-api.env
+sudoedit /etc/sumrak-api/sumrak-api.env
+#   SYNCD_TOKEN        ← `openssl rand -hex 32`
+#   SYNCD_DATABASE_URL ← the password from step 1
+#   (SYNCD_ADDR=127.0.0.1:8687 and SYNCD_FIREBASE_PROJECT_ID=sumrak-app are pre-set)
 
-sudo mkdir -p /etc/syncd
-sudo cp deploy/syncd.env.example /etc/syncd/syncd.env
-sudo chmod 600 /etc/syncd/syncd.env
-# Edit /etc/syncd/syncd.env: set SYNCD_TOKEN to `openssl rand -hex 32` output.
-
-sudo cp deploy/syncd.service /etc/systemd/system/syncd.service
+# 3. Service
+sudo cp deploy/sumrak-api.service /etc/systemd/system/sumrak-api.service
 sudo systemctl daemon-reload
-sudo systemctl enable --now syncd
+sudo systemctl enable --now sumrak-api
+journalctl -u sumrak-api -n 20     # expect: migrations applied=[0001_init], syncEnabled=true
+
+# 4. Cloudflare tunnel: published application route
+#    sumrak.winapps.dev  →  http://localhost:8687
+#    (Zero Trust dashboard → Networks → Tunnels → <tunnel> → Public Hostname,
+#     or the ingress rule in the tunnel's config.yml, then restart cloudflared)
 ```
 
-`enable --now` both starts it and registers it for boot — that is the
-reboot-survival requirement; verify with a real reboot below.
-
-## 3. Verify
+## Verify
 
 ```sh
-systemctl status syncd            # active (running)
-journalctl -u syncd -f            # logs (stdout goes to the journal)
+systemctl status sumrak-api syncd     # BOTH active — aflulit's syncd untouched on :8787
+ss -ltnp | grep -E ':8687|:8787'      # sumrak-api on 127.0.0.1:8687, aflulit on :8787
 
-# From any tailnet machine (token from /etc/syncd/syncd.env):
-curl -H "Authorization: Bearer $TOKEN" http://<tailnet-hostname>:8787/backups
-# → {"backups":[]}
-curl http://<tailnet-hostname>:8787/backups
-# → 401 {"error":"unauthorized"}
+TOKEN=$(sudo grep ^SYNCD_TOKEN= /etc/sumrak-api/sumrak-api.env | cut -d= -f2)
+curl -s -H "Authorization: Bearer $TOKEN" http://127.0.0.1:8687/backups   # {"backups":[]}
+curl -s -H "Authorization: Bearer $TOKEN" https://sumrak.winapps.dev/backups
+curl -si https://sumrak.winapps.dev/v1/me | head -1                      # HTTP/2 401 (no ID token)
 
-# Reboot survival:
-sudo reboot
-# ...after it's back:
-systemctl status syncd            # active (running) again, no manual step
+sudo reboot   # …then: systemctl status sumrak-api → active again, no manual step
 ```
 
-The tailnet hostname is whatever `tailscale status` calls the server (e.g.
-`homeserver` → `http://homeserver:8787`); MagicDNS names and the `100.x.y.z`
-address both work. Use that same base URL + token in the app:
-**Settings → Backup → Home server (syncd)**.
+In the app: **Settings → Backup → Home server** = `https://sumrak.winapps.dev` +
+the token; **Settings → Аккаунт** sync uses the same base URL with the
+Firebase sign-in (no token needed).
+
+## Updating later
+
+```sh
+cd ~/SumrakAPI && git pull && make build \
+  && sudo install -m 755 bin/sumrak-api /usr/local/bin/sumrak-api \
+  && sudo systemctl restart sumrak-api && journalctl -u sumrak-api -n 10
+```
+
+Migrations run automatically at startup (advisory-locked, idempotent).
 
 ## Operational notes
 
-- **Storage**: archives land in `/var/lib/syncd` as
-  `sumrak-backup-YYYYMMDD-HHMMSSZ.json`, already encrypted by the app.
-  Retention (30 newest daily dates + one per older month — the T20 rule)
-  runs automatically after every upload; nothing else to cron.
-- **Token rotation**: edit `/etc/syncd/syncd.env`, `sudo systemctl restart
-  syncd`, update the token in the app.
-- **Logs** never contain the token or archive contents.
-- **Backup of the backups**: `/var/lib/syncd` is a copy of data that also
-  lives on the phone and in the content repo's `backups/` — losing it only
-  costs redundancy.
-
-## Postgres + sync (`/v1`, T103)
-
-Optional: turns on the per-row sync API for the two-phone account sync (design
-`ACCOUNTS_AND_SYNC.md` §4/§6, option A: home server over Tailscale). The
-backup routes are unaffected. On the home server:
-
-```sh
-# 1. Postgres
-sudo apt install -y postgresql
-sudo -u postgres psql -c "CREATE ROLE syncd_db LOGIN PASSWORD 'REPLACE_WITH_DB_PASSWORD';"
-sudo -u postgres createdb -O syncd_db syncd
-
-# 2. Config (root-only file): append the two vars
-sudo tee -a /etc/syncd/syncd.env >/dev/null <<'ENVEOF'
-SYNCD_DATABASE_URL=postgres://syncd_db:REPLACE_WITH_DB_PASSWORD@127.0.0.1:5432/syncd?sslmode=disable
-SYNCD_FIREBASE_PROJECT_ID=sumrak-app
-ENVEOF
-
-# 3. Rebuild + install (same flow as steps 1-2 above), then restart.
-#    Migrations run automatically at startup.
-git pull && make build && sudo install -m 755 bin/syncd /usr/local/bin/syncd
-#    (cross-compiling instead: make linux, scp bin/syncd-linux-* over, install it)
-sudo systemctl restart syncd
-journalctl -u syncd -n 20          # expect: migrations applied=[0001_init], syncEnabled=true
-
-# 4. Verify
-curl -H "Authorization: Bearer $TOKEN" http://<tailnet-hostname>:8787/backups   # still works
-curl -i http://<tailnet-hostname>:8787/v1/me                                    # 401 without an ID token
-```
-
-Back up the database with `pg_dump syncd`: its rows hold the only server-side
-copy of the other phone's changes. Other hosting options (managed Postgres +
-Fly/Cloud Run, or Cloudflare Tunnel) differ only in `SYNCD_DATABASE_URL` and
-reachability; the binary and env vars are identical. Never commit the real
-password; `/v1` logs carry only a uid hash, counts and timings.
-
+- **Storage**: backup archives land in `/var/lib/sumrak-api` as
+  `sumrak-backup-YYYYMMDD-HHMMSSZ.json` (already encrypted by the app);
+  retention (30 newest daily dates + one per older month, the T20 rule) runs
+  after every upload.
+- **Database**: `sudo -u postgres pg_dump sumrak_api > sumrak_api.sql` — its
+  rows are the server-side copy of each phone's changes.
+- **Token rotation**: edit `/etc/sumrak-api/sumrak-api.env`,
+  `sudo systemctl restart sumrak-api`, update the token in the app.
+- **Logs** never contain the token, ID tokens, archive contents or row data —
+  `/v1` lines carry a uid hash, counts and timings only.

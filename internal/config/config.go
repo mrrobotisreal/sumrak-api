@@ -11,9 +11,10 @@ import (
 
 // Config is everything syncd needs to run.
 type Config struct {
-	// Addr is the listen address (SYNCD_ADDR, default ":8787"). On the home
-	// server this can stay a wildcard bind — Tailscale is the only network
-	// path in (deploy notes) — or be pinned to the tailnet IP.
+	// Addr is the listen address (SYNCD_ADDR, default "127.0.0.1:8687" — 8787
+	// is the aflulit app's syncd on the same home server; the public route is
+	// the Cloudflare tunnel https://sumrak.winapps.dev → localhost:8687, so
+	// a loopback bind is all it needs).
 	Addr string
 	// Token is the required bearer token (SYNCD_TOKEN).
 	Token string
@@ -46,7 +47,7 @@ const MinTokenLen = 16
 // FromEnv reads and validates configuration from the environment.
 func FromEnv() (Config, error) {
 	cfg := Config{
-		Addr:               envOr("SYNCD_ADDR", ":8787"),
+		Addr:               envOr("SYNCD_ADDR", "127.0.0.1:8687"),
 		Token:              os.Getenv("SYNCD_TOKEN"),
 		DataDir:            envOr("SYNCD_DATA_DIR", "./data"),
 		RetentionDailyDays: 30,

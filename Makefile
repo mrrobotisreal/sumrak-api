@@ -1,7 +1,7 @@
 .PHONY: build test vet fmt check linux test-pg
 
 build:
-	go build -o bin/syncd ./cmd/syncd
+	go build -o bin/sumrak-api ./cmd/syncd
 
 test:
 	go test ./...
@@ -16,7 +16,7 @@ check: fmt vet test
 
 # Cross-compile for the home server (see deploy/README.md; GOARCH=arm64 for ARM boxes).
 linux:
-	GOOS=linux GOARCH=amd64 go build -o bin/syncd-linux-amd64 ./cmd/syncd
+	GOOS=linux GOARCH=amd64 go build -o bin/sumrak-api-linux-amd64 ./cmd/syncd
 
 # Integration tests against a throwaway database on local Postgres 17
 # (brew services start postgresql@17). Creates + drops its own DB.

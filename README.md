@@ -2,7 +2,9 @@
 
 The Go backend for [Sumrak](../Sumrak) (Mitch's personal Russian-learning
 app). v1 scope is exactly **`syncd`**, the backup-sync service from design §9
-(ADR-0015): it runs on the home server, is reachable only over Tailscale, and
+(ADR-0015): it runs on the home server as `sumrak-api.service` on
+`127.0.0.1:8687`, is reached at `https://sumrak.winapps.dev` (Cloudflare
+tunnel), and
 stores the app's **encrypted** backup snapshots as opaque blobs. It never
 decrypts anything — the passphrase and derived key exist only on the phone.
 
@@ -16,7 +18,7 @@ decrypts anything — the passphrase and derived key exist only on the phone.
 
 Every route (including unknown paths) requires `Authorization: Bearer
 <token>`; there is deliberately no unauthenticated endpoint, not even a
-health check — Tailscale reachability plus an authed `GET /backups` is the
+health check — an authed `GET /backups` is the
 health check.
 
 Archive names are the T20 contract shared with the app and the GitHub
@@ -47,7 +49,7 @@ Last-writer-wins is decided in SQL by `(hlc, device_id)`; a loser is counted in
 Errors are `{"error": "..."}`.
 
 **Config:** `SYNCD_DATABASE_URL`, `SYNCD_FIREBASE_PROJECT_ID`,
-`SYNCD_MAX_PUSH_BYTES` (default 5242880). See `deploy/syncd.env.example`.
+`SYNCD_MAX_PUSH_BYTES` (default 5242880). See `deploy/sumrak-api.env.example`.
 
 **Library choice:** `github.com/golang-jwt/jwt/v5` + stdlib `crypto/x509`
 verifying against Google's public securetoken x509 certs (cached by
@@ -101,15 +103,16 @@ dependencies are pgx and golang-jwt, needed by the optional `/v1` sync API.
 
 ```sh
 make check       # gofmt + go vet + go test
-make build       # → bin/syncd
+make build       # → bin/sumrak-api
 
 SYNCD_TOKEN=$(openssl rand -hex 32) SYNCD_DATA_DIR=./data go run ./cmd/syncd
 ```
 
-Configuration is env-vars only (see `deploy/syncd.env.example`); no secret is
+Configuration is env-vars only (see `deploy/sumrak-api.env.example`); no secret is
 ever committed or logged.
 
 ## Deploy
 
 See [`deploy/README.md`](deploy/README.md) — build, systemd install,
-Tailscale notes, reboot-survival verification.
+the side-by-side table with aflulit's `syncd` (:8787), the Cloudflare tunnel
+route, reboot-survival verification.

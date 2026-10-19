@@ -1,0 +1,36 @@
+# systemd unit for the Sumrak API (binary `syncd`: T21 backups + T103 /v1 sync).
+# Named sumrak-api — NOT syncd — because the home server already runs the
+# aflulit app's own `syncd.service` on :8787. Everything here is namespaced
+# (unit, user, /etc, /var/lib, port 8687, Postgres db) so the two never touch.
+# Install: sudo cp deploy/sumrak-api.service /etc/systemd/system/sumrak-api.service
+# See deploy/README.md for the full walkthrough.
+[Unit]
+Description=Sumrak API (backups + account sync)
+After=network-online.target postgresql.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=sumrak-api
+Group=sumrak-api
+# Config lives in a root-owned env file, never in this unit or the repo:
+#   SYNCD_TOKEN=<64-hex-char bearer token>
+#   SYNCD_ADDR=127.0.0.1:8687
+#   SYNCD_DATA_DIR=/var/lib/sumrak-api
+#   SYNCD_DATABASE_URL=postgres://…/sumrak_api
+#   SYNCD_FIREBASE_PROJECT_ID=sumrak-app
+EnvironmentFile=/etc/sumrak-api/sumrak-api.env
+ExecStart=/usr/local/bin/sumrak-api
+Restart=on-failure
+RestartSec=3
+
+# Hardening: it needs nothing but its data dir (and Postgres over localhost).
+StateDirectory=sumrak-api
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/sumrak-api
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

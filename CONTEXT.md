@@ -30,10 +30,12 @@ every request. Constant-time compared; every route — unknown paths included
 — 401s without it. There is deliberately no unauthenticated endpoint, not
 even a health check (an authed `GET /backups` is the health check).
 
-**Tailnet host**:
-How the app reaches syncd: `http://<tailscale-name>:8787` inside Mitch's
-tailnet only. Plain HTTP by design — Tailscale provides transport
-encryption + network auth; no public exposure, no TLS termination.
+**Base URL**:
+How the app reaches the service: `https://sumrak.winapps.dev` — a Cloudflare
+tunnel published route → `http://localhost:8687` on the home server, where it
+runs as `sumrak-api.service` (NOT `syncd.service`: that name and :8787 belong
+to the aflulit app on the same box). The service binds loopback only; the
+bearer token (backups) and Firebase ID tokens (/v1) are the auth.
 
 **Record**:
 One synced row of one app SQLite table, stored in Postgres `records` as
