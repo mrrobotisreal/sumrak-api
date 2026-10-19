@@ -86,3 +86,40 @@ address both work. Use that same base URL + token in the app:
 - **Backup of the backups**: `/var/lib/syncd` is a copy of data that also
   lives on the phone and in the content repo's `backups/` — losing it only
   costs redundancy.
+
+## Postgres + sync (`/v1`, T103)
+
+Optional: turns on the per-row sync API for the two-phone account sync (design
+`ACCOUNTS_AND_SYNC.md` §4/§6, option A: home server over Tailscale). The
+backup routes are unaffected. On the home server:
+
+```sh
+# 1. Postgres
+sudo apt install -y postgresql
+sudo -u postgres psql -c "CREATE ROLE syncd_db LOGIN PASSWORD 'REPLACE_WITH_DB_PASSWORD';"
+sudo -u postgres createdb -O syncd_db syncd
+
+# 2. Config (root-only file): append the two vars
+sudo tee -a /etc/syncd/syncd.env >/dev/null <<'ENVEOF'
+SYNCD_DATABASE_URL=postgres://syncd_db:REPLACE_WITH_DB_PASSWORD@127.0.0.1:5432/syncd?sslmode=disable
+SYNCD_FIREBASE_PROJECT_ID=sumrak-app
+ENVEOF
+
+# 3. Rebuild + install (same flow as steps 1-2 above), then restart.
+#    Migrations run automatically at startup.
+git pull && make build && sudo install -m 755 bin/syncd /usr/local/bin/syncd
+#    (cross-compiling instead: make linux, scp bin/syncd-linux-* over, install it)
+sudo systemctl restart syncd
+journalctl -u syncd -n 20          # expect: migrations applied=[0001_init], syncEnabled=true
+
+# 4. Verify
+curl -H "Authorization: Bearer $TOKEN" http://<tailnet-hostname>:8787/backups   # still works
+curl -i http://<tailnet-hostname>:8787/v1/me                                    # 401 without an ID token
+```
+
+Back up the database with `pg_dump syncd`: its rows hold the only server-side
+copy of the other phone's changes. Other hosting options (managed Postgres +
+Fly/Cloud Run, or Cloudflare Tunnel) differ only in `SYNCD_DATABASE_URL` and
+reachability; the binary and env vars are identical. Never commit the real
+password; `/v1` logs carry only a uid hash, counts and timings.
+

@@ -34,3 +34,31 @@ even a health check (an authed `GET /backups` is the health check).
 How the app reaches syncd: `http://<tailscale-name>:8787` inside Mitch's
 tailnet only. Plain HTTP by design — Tailscale provides transport
 encryption + network auth; no public exposure, no TLS termination.
+
+**Record**:
+One synced row of one app SQLite table, stored in Postgres `records` as
+`(uid, tbl, pk, data JSONB, deleted, hlc, device_id, seq)`. `tbl` must be on
+the allowlist in `internal/sync/tables.go`. Unlike an archive, record data is
+plaintext JSON to the server, scoped by Firebase `uid`.
+
+**seq / cursor**:
+`records.seq` comes from the global sequence `records_seq` and is bumped on
+every applied write. `GET /v1/sync/pull?since=<seq>` returns rows with a
+larger seq in order; `nextSince` is the client's cursor. Pushes are
+serialised by an advisory lock so seq values commit in order and a cursor can
+never skip a row.
+
+**hlc**:
+Hybrid logical clock, an int64 the app stamps on each change. Conflicts are
+last-writer-wins on `(hlc, device_id)`, compared in SQL; the loser is
+reported as `skipped`.
+
+**Tombstone**:
+A deleted record kept as a row (`deleted=true`, `data=NULL`) so the delete
+syncs to other devices and a stale upsert (lower hlc) cannot resurrect it.
+
+**Firebase ID token**:
+The credential for `/v1/*` (not the backup bearer token). Verified offline
+from Google's public certs and the project id; `uid` and `email` go into the
+request context.
+
